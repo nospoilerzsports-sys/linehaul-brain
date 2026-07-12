@@ -1,0 +1,26 @@
+{
+  "generatedAt": "2026-07-09T12:00:00.000Z",
+  "summary": "SAMPLE DATA — replace this file with your real briefing.json exported from the Daily Dispatch artifact (Export JSON button).",
+  "bottomLine": "Replace data/briefing.json with your exported briefing to see your real business here.",
+  "focus": {
+    "today": ["Replace this sample with your exported briefing.json"],
+    "tomorrow": [],
+    "week": ["Ask your developer to drop the file into data/briefing.json"],
+    "month": []
+  },
+  "topRisks": ["This is placeholder data — not your business."],
+  "signals": ["Sample signal — replace with real export."],
+  "strategy": {
+    "quickWins": [{ "what": "Export your real briefing JSON from the artifact", "why": "One click — then this app shows your business" }],
+    "longTerm": [{ "play": "Point the app at a hosted briefing.json URL", "today": "So updates don't need an app rebuild" }],
+    "bottleneck": "",
+    "leanIn": [],
+    "stopDoing": []
+  },
+  "items": [
+    { "id": "deal-0", "kind": "deal", "priority": null, "person": "Sample Deal", "summary": "VT 8 Assigned Solo + Spot — sample", "detail": "Placeholder row", "owner": null, "tag": "VT", "lastDate": "2026-07-01", "openLoop": true },
+    { "id": "action-0", "kind": "action", "priority": "now", "person": "Sample Buyer", "summary": "Call the sample buyer", "detail": "Placeholder row", "owner": "you", "tag": null, "lastDate": "2026-07-05", "openLoop": true }
+  ],
+  "passes": 1,
+  "sources": 1
+}
