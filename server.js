@@ -1,12 +1,17 @@
-// backend/server.js — brain endpoint that also searches your HubSpot CSVs.
+// backend/server.js — brain endpoint: answers questions, searches HubSpot CSVs,
+// and captures spoken UPDATES ("this deal is dead") into a chronological log.
 //
-// Put these files next to server.js (all REDACTED first):
-//   briefing.json                          (from the Daily Dispatch artifact)
-//   any number of .csv files               (HubSpot contacts, deals, etc.)
+// Files next to server.js (all REDACTED first):
+//   briefing.json   + any number of .csv files (HubSpot contacts, deals, etc.)
 //
 // Setup: npm install express cors csv-parse
-//        env var ANTHROPIC_API_KEY=sk-ant-...
-//        node server.js
+//        env ANTHROPIC_API_KEY=sk-ant-...   ->   node server.js
+//
+// API:
+//   POST /ask  { question, history:[{role,content}], updates:[{ts,entity,change}] }
+//     -> { answer, updates:[{entity,change}] }   // updates = NEW updates detected in this message
+//   The app stores the update log on-device and sends it with every request,
+//   so the newest state always wins — even if this server restarts.
 
 const express = require("express");
 const cors = require("cors");
@@ -20,11 +25,9 @@ app.use(express.json({ limit: "2mb" }));
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
-// ---- load briefing.json (optional) ----
 let briefing = {};
 try { briefing = JSON.parse(fs.readFileSync(path.join(__dirname, "briefing.json"), "utf8")); } catch (e) {}
 
-// ---- load every .csv in this folder into rows we can search ----
 let rows = [];
 try {
   for (const f of fs.readdirSync(__dirname)) {
@@ -52,26 +55,61 @@ function searchRows(q, limit) {
   return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.r);
 }
 
+function extractJSON(text) {
+  if (!text) return null;
+  let t = text.replace(/```json|```/g, "").trim();
+  const s = t.indexOf("{");
+  if (s > 0) t = t.slice(s);
+  try { return JSON.parse(t); } catch (e) {}
+  // salvage: trim to last closing brace
+  const last = t.lastIndexOf("}");
+  if (last > 0) { try { return JSON.parse(t.slice(0, last + 1)); } catch (e) {} }
+  return null;
+}
+
+
+// Model router: cheap+fast for simple lookups, full Sonnet for analysis,
+// comparisons, strategy, and anything ambiguous. Defaults UP, not down.
+function pickModel(q) {
+  const s = (q || "").toLowerCase();
+  const simple = [
+    /^(what('s| is) the (status|stage|phone|email|number)|where (is|are)|when (did|is)|who is )/,
+    /^(show|list|find) (me )?(the )?[a-z ]{0,20}(deal|contact|number|email|phone)/,
+  ];
+  const isShort = s.length < 60;
+  if (isShort && simple.some((re) => re.test(s))) return "claude-haiku-4-5-20251001";
+  return "claude-sonnet-4-5"; // analysis, matching, strategy, general questions
+}
+
 app.post("/ask", async (req, res) => {
   try {
-    const { question, history } = req.body || {};
+    const { question, history, updates } = req.body || {};
     if (!question) return res.status(400).json({ error: "no question" });
 
-    const matches = searchRows(question, 40);
+    const matches = searchRows(question, 25);
     const csvBlock = matches.length
-      ? matches.map((r) => JSON.stringify(r)).join("\n").slice(0, 60000)
+      ? matches.map((r) => JSON.stringify(r)).join("\n").slice(0, 30000)
       : "(no matching CRM rows)";
+
+    const updLog = Array.isArray(updates) && updates.length
+      ? updates.slice(0, 80).map((u) => `${u.ts || ""} — ${u.entity || ""}: ${u.change || ""}`).join("\n")
+      : "(none yet)";
 
     const ctx = `STATE OF BUSINESS: ${briefing.summary || ""}
 BOTTOM LINE: ${briefing.bottomLine || ""}
-BRIEFING FACTS: ${JSON.stringify(briefing.items || []).slice(0, 25000)}
+BRIEFING FACTS: ${JSON.stringify(briefing.items || []).slice(0, 12000)}
 
-RELEVANT CRM ROWS (from your HubSpot CSV exports, matched to the question):
+TEAM UPDATE LOG (newest first — these OVERRIDE anything older in the briefing or CRM rows):
+${updLog}
+
+RELEVANT CRM ROWS (from HubSpot CSV exports, matched to the question):
 ${csvBlock}`;
 
     const hist = (history || []).slice(-6).map((m) => `${m.role === "user" ? "Team" : "Brain"}: ${m.content}`).join("\n");
 
-    const prompt = `You are the shared business brain for a FedEx line haul brokerage. Answer using ONLY the data below (the briefing + matched CRM rows). Ground every answer in it; if it's not there, say so — NEVER invent names, numbers, or contacts. When asked to find or match someone (e.g. a buyer for a deal), pick from the CRM rows and explain why they fit. Be concise and specific.
+    const prompt = `You are the shared business brain for a FedEx line haul brokerage. Use ONLY the data below. The TEAM UPDATE LOG is the newest truth — it overrides the briefing and CRM rows. NEVER invent facts, names, or numbers; if it's not in the data, say so.
+
+ALSO: detect whether the team's last message contains business UPDATES — statements changing the state of a deal, contact, or task (e.g. "the SP030 deal is dead", "mark Swetha's deal as closing", "Rick sent the docs"). Questions are NOT updates.
 
 ${ctx}
 
@@ -79,16 +117,25 @@ CONVERSATION:
 ${hist}
 Team: ${question}
 
-Answer:`;
+Respond with ONLY valid JSON, no fences, no preamble:
+{"answer":"your concise reply (acknowledge any updates you logged)","updates":[{"entity":"deal/person/thing updated","change":"one line: what changed"}]}
+If there are no updates, use "updates":[].`;
 
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 900, messages: [{ role: "user", content: prompt }] }),
+      body: JSON.stringify({ model: pickModel(question), max_tokens: 800, messages: [{ role: "user", content: prompt }] }),
     });
     const data = await r.json();
-    const answer = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-    res.json({ answer: answer || "No answer returned." });
+    const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    const parsed = extractJSON(text);
+
+    if (parsed && typeof parsed.answer === "string") {
+      res.json({ answer: parsed.answer, updates: Array.isArray(parsed.updates) ? parsed.updates.filter((u) => u && u.change) : [] });
+    } else {
+      // graceful fallback: return raw text as the answer, no updates
+      res.json({ answer: text || "No answer returned.", updates: [] });
+    }
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "brain error" });
