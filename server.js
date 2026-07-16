@@ -117,16 +117,27 @@ CONVERSATION:
 ${hist}
 Team: ${question}
 
+FORMAT RULES for the answer:
+- Start with a short bold headline: **Like This**
+- Then 2-5 short bullet lines starting with "- " (each under 15 words)
+- Bold key names/numbers inline with **asterisks**
+- Keep the whole answer under 90 words. End with: _Ask for details if you want more._ ONLY when there is meaningfully more to tell.
+- If updates were logged, acknowledge in one bullet.
+
 Respond with ONLY valid JSON, no fences, no preamble:
-{"answer":"your concise reply (acknowledge any updates you logged)","updates":[{"entity":"deal/person/thing updated","change":"one line: what changed"}]}
+{"answer":"formatted answer following the FORMAT RULES","updates":[{"entity":"deal/person/thing updated","change":"one line: what changed"}]}
 If there are no updates, use "updates":[].`;
 
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: pickModel(question), max_tokens: 800, messages: [{ role: "user", content: prompt }] }),
+      body: JSON.stringify({ model: pickModel(question), max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
     });
     const data = await r.json();
+    if (data.error) {
+      console.error("Anthropic API error:", JSON.stringify(data.error));
+      return res.json({ answer: "", error: "AI request failed", detail: (data.error.message || data.error.type || "unknown") });
+    }
     const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
     const parsed = extractJSON(text);
 
