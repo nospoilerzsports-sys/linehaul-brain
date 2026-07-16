@@ -128,12 +128,29 @@ Respond with ONLY valid JSON, no fences, no preamble:
 {"answer":"formatted answer following the FORMAT RULES","updates":[{"entity":"deal/person/thing updated","change":"one line: what changed"}]}
 If there are no updates, use "updates":[].`;
 
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: pickModel(question), max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
-    });
-    const data = await r.json();
+    // Call Claude with auto-retry: transient "overloaded" errors retry twice,
+    // then fall back to the fast model so the user always gets an answer.
+    const callClaude = async (model) => {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model, max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
+      });
+      return r.json();
+    };
+    const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+    const primary = pickModel(question);
+    let data = await callClaude(primary);
+    let tries = 0;
+    while (data.error && /overload|rate|529|429/i.test(JSON.stringify(data.error)) && tries < 2) {
+      tries++;
+      await sleep(1200 * tries);
+      data = await callClaude(primary);
+    }
+    if (data.error && primary !== "claude-haiku-4-5-20251001") {
+      await sleep(500);
+      data = await callClaude("claude-haiku-4-5-20251001"); // fast fallback so the user still gets an answer
+    }
     if (data.error) {
       console.error("Anthropic API error:", JSON.stringify(data.error));
       return res.json({ answer: "", error: "AI request failed", detail: (data.error.message || data.error.type || "unknown") });
